@@ -1,0 +1,12 @@
+star_container_loc:/share/data/software/singularity/star_2.7.10.a.sif
+local_cores:4
+local_mem:20G
+singularity_image:/share/data/software/singularity/trimmomatic_0.39.sif
+jar_file:trimmomatic-0.39.jar
+max_multiMapping:10
+SAM_multiMax:-1
+genomeSAindexNbases:14
+featureExon:exon
+ExonParent:transcript_id
+rsem_container_loc:/share/data/software/singularity/rsem_latest.sif
+read_length_average:295

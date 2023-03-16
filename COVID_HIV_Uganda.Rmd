@@ -1,0 +1,309 @@
+---
+title: "COVID_HIV_Uganda"
+output: html_document
+date: "2023-01-28"
+---
+#Load libraries.
+```{r}
+library(DESeq2) #1.28.1
+library(dplyr) #1.0.2
+library(biomaRt) #2.44.4
+library(openxlsx) #4.2.3
+library(GenomicFeatures) #1.40.1 
+library(plyr) #1.8.6
+library(readr)
+library(RColorBrewer)
+library(stringr)
+library(ggplot2)
+library(ConsensusClusterPlus)
+library(NbClust)
+```
+
+#Load metadata file and counts from STAR output. 
+```{r}
+metadata <- read.csv("covid_ug_rna_seq_metadata_n_100.csv")
+main_raw_data_matrix <- read.csv("STAR_counts.csv", row.names = "ensembl_id")
+```
+
+#Subset the metadata.
+```{r}
+samples_to_keep <- intersect(colnames(main_raw_data_matrix), metadata$pid)
+main_raw_data_matrix <- main_raw_data_matrix %>% dplyr::select(all_of(samples_to_keep))
+subseted_metadata <- metadata %>% dplyr::filter(pid %in% samples_to_keep)
+```
+#Check that names in the count file and metadata are the same.
+```{r}
+table(colnames(main_raw_data_matrix) %in% subseted_metadata$pid)
+```
+
+#First comparison:
+#Patients with severe COVID vs. non-severe COVID-19 --> comparing patients with whoseverity_imp=4 (N=16) vs. whoseverity_imp=1/2/3 (N=84 - reference group). Adjust this comparison by age, sex, and HIV status. For the 2 patients with missing HIV status, consider them HIV negative (0). 
+
+```{r}
+first_cmp_metadata <- subseted_metadata %>% dplyr::select(pid, sex, age, hivrdtresult, whoseverity_imp,  phasedelta, steroids)
+first_cmp_metadata$hivrdtresult[is.na(first_cmp_metadata$hivrdtresult)]<- 0
+first_cmp_metadata$whoseverity_imp_old <-as.factor(first_cmp_metadata$whoseverity_imp)
+
+first_cmp_metadata$whoseverity_imp[first_cmp_metadata$whoseverity_imp %in% c(1,2,3)] <- 0
+
+first_cmp_metadata$whoseverity_imp[first_cmp_metadata$whoseverity_imp ==4 ] <- 1
+
+first_cmp_metadata$whoseverity_imp <- factor(first_cmp_metadata$whoseverity_imp, levels = c(0,1))
+
+first_cmp_metadata$phasedelta <- factor(first_cmp_metadata$phasedelta, levels = c(0,1))
+
+first_cmp_metadata$steroids <- factor(first_cmp_metadata$steroids, levels = c(0,1))
+
+first_cmp_metadata$hivrdtresult <- factor(first_cmp_metadata$hivrdtresult, levels = c(0,1))
+#scale age
+first_cmp_metadata$scaled_age <- scale(first_cmp_metadata$age, center = TRUE)
+
+first_cmp_metadata$sex <- as.factor(first_cmp_metadata$sex)
+rownames(first_cmp_metadata) <- first_cmp_metadata$pid
+
+main_raw_data_matrix <- main_raw_data_matrix[,rownames(first_cmp_metadata)]
+```
+
+
+#Check the order of rownames in metadata and colnames in matrix are the same.
+```{r}
+all(rownames(first_cmp_metadata) == colnames(main_raw_data_matrix))
+```
+
+#Compute differences in COVID severity using as covariates age, sex and hiv.
+```{r}
+first_dds <- DESeqDataSetFromMatrix(countData = main_raw_data_matrix,
+                              colData = first_cmp_metadata,
+                              design = ~ scaled_age + sex + hivrdtresult +whoseverity_imp)
+
+keep <- rowSums(counts(first_dds)) >= 10
+first_dds <- first_dds[keep,]
+
+first_dds <- DESeq(first_dds)
+resultsNames(first_dds)
+
+first_contrast_model <-  model.matrix(design(first_dds), colData(first_dds))
+
+res_whoseverity <- results(first_dds, contrast = list("whoseverity_imp_1_vs_0"))
+
+```
+
+
+```{r}
+normalized_counts <- counts(first_dds,normalized=TRUE)
+```
+
+#Get gene names. 
+```{r}
+gene_ids <- rownames(normalized_counts)
+gene_ids2 <- str_sub(gene_ids,1,15)
+#biomart
+ensembl <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
+
+ensembl <- useDataset(dataset = "hsapiens_gene_ensembl", mart = ensembl)
+
+correlation_id_name <- getBM(attributes = c('ensembl_gene_id', 'external_gene_name'),
+      filters = 'ensembl_gene_id',
+      values = gene_ids2, 
+      mart = ensembl)
+```
+
+
+```{r}
+df_normalized_counts <- as.data.frame(normalized_counts)
+df_normalized_counts$ensembl_gene_id <- str_sub(rownames(df_normalized_counts),1,15) 
+df_normalized_counts$Gene_ID <-rownames(df_normalized_counts) 
+
+df_normalized_counts <- join(df_normalized_counts, correlation_id_name, type="inner")
+df_normalized_counts$ensembl_gene_id <- NULL
+
+df_normalized_counts2 <- df_normalized_counts[,c(101,102,1:100)]
+
+write.table(df_normalized_counts2, "Normalized_counts2.csv", quote = F, sep = ",", row.names = F, col.names = T)
+
+```
+
+#Second comparison.
+#Patients admitted during the Delta phase to those admitted during non-Delta phases --> comparing phasedelta=1 (N=25) vs. phasedelta=0 (N=75 - reference group). Adjust by age, sex, HIV co-infection, corticosteroid exposure, and WHO clinical severity classification. For the 2 patients with missing HIV status, consider them HIV negative (0). 
+
+```{r}
+second_whosev_dds <- first_dds
+design(second_whosev_dds) <- ~ scaled_age + sex + hivrdtresult +steroids + whoseverity_imp_old + phasedelta
+
+keep <- rowSums(counts(second_whosev_dds) >= 10 ) >= 2
+second_whosev_dds <- second_whosev_dds[keep,]
+
+second_whosev_dds <- DESeq(second_whosev_dds)
+resultsNames(second_whosev_dds)
+
+second_whoseverity_delta_contrast_model <-  model.matrix(design(second_whosev_dds), colData(second_whosev_dds))
+
+res_phasedelta_whoseverity <- results(second_whosev_dds, contrast = list("phasedelta_1_vs_0"))
+
+```
+
+#Patients who are HIV positive vs. negative adjusting for age, sex, and whoseverity_imp. Exclude the 2 patients with missing HIV status. 
+```{r}
+which(colnames(first_dds)=="CL558")
+which(colnames(first_dds)=="CL471")
+
+third_dds <- first_dds[,-80]
+third_dds <- third_dds[,-52]
+
+keep <- rowSums(counts(third_dds) >= 10 ) >= 2
+third_dds <- third_dds[keep,]
+
+design(third_dds) <- ~ scaled_age + sex  + whoseverity_imp_old + hivrdtresult
+third_dds <- DESeq(third_dds)
+
+resultsNames(third_dds)
+
+third_contrast_model <-  model.matrix(design(third_dds), colData(third_dds))
+
+res_hiv <- results(third_dds, contrast = list("hivrdtresult_1_vs_0"))
+```
+
+
+```{r}
+gene_id_name <- read.csv("protein_coding_gencode.v41_Gene_ID_Name.csv")
+```
+
+
+#Add gene names to the results table and save it.
+```{r}
+print_deseq_results <- function(results,comparison){
+  res <- as.data.frame(results)
+  res$Gene_ID <- rownames(res)
+  merged_table <- join(res, gene_id_name, type="inner")
+
+  #Now arrange by padjusted values.
+  merged_table <- merged_table %>% arrange(padj)
+  write.table(merged_table, paste0(comparison, "_corrected_DESeq_results.csv"), quote = F, row.names = F, col.names = T, sep = ",")
+}
+
+```
+
+```{r}
+print_deseq_results(res_whoseverity, "whoseverity_imp")
+print_deseq_results(res_phasedelta_whoseverity,"whoseverity_imp_old")
+print_deseq_results(res_hiv, "hivrdtresult")
+```
+
+#For the clustering analysis applied unsupervised consensus clustering to normalized counts from symtompatic patients. Remove transcripts with very low expression (<100 reads) and then rank transcripts by median absolute variance across all samples, with the top 5,000 selected for clustering. 
+```{r}
+kepp_patients <- c(2,3,4)
+patients_samples <- subseted_metadata %>% dplyr::filter(whoseverity_imp %in% kepp_patients)
+patients_samples <- patients_samples$pid
+patients_norm_counts <- normalized_counts[,patients_samples]
+patients_norm_counts <- as.data.frame(patients_norm_counts)
+#remove genes with less than 100 counts
+patients_norm_counts <- patients_norm_counts[-which(rowSums(patients_norm_counts[sapply(patients_norm_counts, is.numeric)]) < 100),]
+
+#rank transcripts by median absolute variance across all samples, with the top 5,000 selected for clustering.
+patients_norm_counts$MAD <- apply(patients_norm_counts, 1, mad, na.rm = TRUE)
+patients_norm_counts$Genes <- rownames(patients_norm_counts)
+patients_norm_counts2 <- patients_norm_counts %>% arrange(desc(MAD)) %>% dplyr::select(!MAD)
+
+patients_norm_counts2 <- patients_norm_counts2[1:5000,]
+top_genes <- patients_norm_counts2$Genes
+sub_counts <- patients_norm_counts[top_genes,]
+sub_counts$MAD <- NULL
+sub_counts$Genes <- NULL
+
+mat_sub_counts <- as.matrix(sub_counts)
+mat_sub_counts <- scale(mat_sub_counts)
+```
+
+#Run consensus clustering.
+```{r}
+results = ConsensusClusterPlus(
+  	  d=mat_sub_counts, 
+          maxK = 12, 
+          reps=1000, 
+          pItem=0.8,pFeature=1, 
+          clusterAlg="hc",
+          innerLinkage="ward.D2", finalLinkage="ward.D2", 
+          distance="euclidean", plot="png", title = "hc_clustering"
+  	  )
+
+results2 = ConsensusClusterPlus(mat_sub_counts,
+                            maxK=12,
+                            reps=1000,
+                            pItem=0.8,pFeature=1,
+                            distance="euclidean",plot="png",
+                            clusterAlg="km", title = "km_clustering")
+
+
+es.nbclust <- NbClust(test, distance = "euclidean",
+                       min.nc = 2, max.nc = 12,
+                       method = "complete", index ="all")
+```
+
+#Get the cluster - sample relationship
+```{r}
+sample_k <- data.frame(results[[2]][["consensusClass"]])
+sample_k <- sample_k %>% dplyr::rename("k_cluster"="results..2.....consensusClass...")
+write.table(sample_k, "sample_cluster_relation.csv", sep = ",", quote = F, row.names = T, col.names = T)
+```
+
+#Run diffrential expression analysis between these two groups. 
+```{r}
+#So I am going to subset the main matrix and metadata based on these samples and then add to the metadata this new information.
+symptomatic_patients_matrix <- main_raw_data_matrix[,patients_samples]
+patients_samples <- first_cmp_metadata %>% dplyr::filter(pid %in% patients_samples)
+all(rownames(sample_k)%in%patients_samples$pid)
+#since they are in order I can add the k_cluster column to the metadata
+patients_samples$k_cluster <- sample_k$k_cluster
+patients_samples$k_cluster <- factor(patients_samples$k_cluster, levels=c(1,2))
+```
+
+#And run diff expression analysis.
+```{r}
+symptomatic_dds <- DESeqDataSetFromMatrix(symptomatic_patients_matrix,
+                                         patients_samples,
+                                         ~sex + scaled_age + hivrdtresult + k_cluster)
+
+keep <- rowSums(counts(symptomatic_dds)) >= 10
+symptomatic_dds <- symptomatic_dds[keep,]
+
+symptomatic_dds <- DESeq(symptomatic_dds)
+resultsNames(symptomatic_dds)
+
+res_symptomatic <- results(symptomatic_dds, contrast = list("k_cluster_2_vs_1"))
+res_symptomatic_df <- as.data.frame(res_symptomatic)
+res_symptomatic_df$Gene_ID <- rownames(res_symptomatic_df)
+merged_table <- join(res_symptomatic_df, gene_id_name, type="inner")
+  
+#Now arrange by padjusted values.
+merged_table <- merged_table %>% arrange(padj)
+write.table(merged_table, "symptomatic_corrected_DESeq_results.csv", quote = F, row.names = F, col.names = T, sep = ",")
+```
+
+
+#Create ranked files to load to GSEA.
+```{r}
+#function to create ranked files to upload in GSEA.
+gsea_function <- function(resuls_df, output_name){
+      resuls_df <- as.data.frame(resuls_df)
+      resuls_df$value <- as.numeric(resuls_df$log2FoldChange > 0)
+      resuls_df <- resuls_df %>% 
+        dplyr::arrange(pvalue) %>%
+        dplyr::mutate(log_pvalue = ifelse(value == 0, (-log10(pvalue)*-1), (-log10(pvalue)*1)))
+      resuls_df$Gene_ID <- rownames(resuls_df)
+      resuls_df <- join(resuls_df, gene_id_name, type="inner")
+      resuls_df <- resuls_df %>% dplyr::select(Gene_Name,log_pvalue)
+      write.table(resuls_df, 
+                  paste0("GSEA_files/",output_name, "_rank.rnk"), 
+                  sep = "\t", 
+                  row.names = F, 
+                  col.names = F, 
+                  quote = F)
+}
+```
+
+```{r}
+gsea_function(res_whoseverity, "whoseverity")
+gsea_function(res_phasedelta_whoseverity, "delta_whoseverity")
+gsea_function(res_hiv,"HIV")
+```
+
