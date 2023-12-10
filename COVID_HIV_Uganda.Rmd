@@ -17,6 +17,7 @@ library(stringr)
 library(ggplot2)
 library(ConsensusClusterPlus)
 library(NbClust)
+library(CARseq)
 ```
 
 #Load metadata file and counts from STAR output. 
@@ -142,7 +143,7 @@ res_phasedelta_whoseverity <- results(second_whosev_dds, contrast = list("phased
 
 ```
 
-#Patients who are HIV positive vs. negative adjusting for age, sex, and whoseverity_imp. Exclude the 2 patients with missing HIV status. 
+#Third comparison: patients who are HIV positive vs. negative adjusting for age, sex, and whoseverity_imp. Exclude the 2 patients with missing HIV status. 
 ```{r}
 which(colnames(first_dds)=="CL558")
 which(colnames(first_dds)=="CL471")
