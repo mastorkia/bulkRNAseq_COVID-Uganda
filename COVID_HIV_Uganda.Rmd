@@ -1,8 +1,9 @@
 ---
 title: "COVID_HIV_Uganda"
 output: html_document
-date: "2023-01-28"
+date: "`r Sys.Date()`"
 ---
+
 #Load libraries.
 ```{r}
 library(DESeq2) #1.28.1
@@ -17,14 +18,22 @@ library(stringr)
 library(ggplot2)
 library(ConsensusClusterPlus)
 library(NbClust)
-library(CARseq)
+library("PCAtools")
+library("Polychrome")
+library(pals)
 ```
 
 #Load metadata file and counts from STAR output. 
 ```{r}
 metadata <- read.csv("covid_ug_rna_seq_metadata_n_100.csv")
+metadata2 <- read.csv("UG_COVID_Metadata_10.5.23.csv")
 main_raw_data_matrix <- read.csv("STAR_counts.csv", row.names = "ensembl_id")
 ```
+
+```{r}
+metadata <- join(metadata, metadata2, type = "inner")
+```
+
 
 #Subset the metadata.
 ```{r}
@@ -41,10 +50,10 @@ table(colnames(main_raw_data_matrix) %in% subseted_metadata$pid)
 #Patients with severe COVID vs. non-severe COVID-19 --> comparing patients with whoseverity_imp=4 (N=16) vs. whoseverity_imp=1/2/3 (N=84 - reference group). Adjust this comparison by age, sex, and HIV status. For the 2 patients with missing HIV status, consider them HIV negative (0). 
 
 ```{r}
-first_cmp_metadata <- subseted_metadata %>% dplyr::select(pid, sex, age, hivrdtresult, whoseverity_imp,  phasedelta, steroids)
+first_cmp_metadata <- subseted_metadata %>% dplyr::select(pid, sex, age, hivrdtresult, whoseverity_imp,  phasedelta, steroids, phase3)
 first_cmp_metadata$hivrdtresult[is.na(first_cmp_metadata$hivrdtresult)]<- 0
 first_cmp_metadata$whoseverity_imp_old <-as.factor(first_cmp_metadata$whoseverity_imp)
-
+first_cmp_metadata$phase3 <- factor(first_cmp_metadata$phase3, levels = c(1,2,3))
 first_cmp_metadata$whoseverity_imp[first_cmp_metadata$whoseverity_imp %in% c(1,2,3)] <- 0
 
 first_cmp_metadata$whoseverity_imp[first_cmp_metadata$whoseverity_imp ==4 ] <- 1
@@ -62,6 +71,8 @@ first_cmp_metadata$scaled_age <- scale(first_cmp_metadata$age, center = TRUE)
 first_cmp_metadata$sex <- as.factor(first_cmp_metadata$sex)
 rownames(first_cmp_metadata) <- first_cmp_metadata$pid
 
+#first_cmp_metadata <- first_cmp_metadata %>% filter(!pid=="CL5")
+
 main_raw_data_matrix <- main_raw_data_matrix[,rownames(first_cmp_metadata)]
 ```
 
@@ -71,11 +82,11 @@ main_raw_data_matrix <- main_raw_data_matrix[,rownames(first_cmp_metadata)]
 all(rownames(first_cmp_metadata) == colnames(main_raw_data_matrix))
 ```
 
-#Compute differences in COVID severity using as covariates age, sex and hiv.
+#Compute differences in COVID severity using as covariates age, sex, phase and hiv.
 ```{r}
 first_dds <- DESeqDataSetFromMatrix(countData = main_raw_data_matrix,
                               colData = first_cmp_metadata,
-                              design = ~ scaled_age + sex + hivrdtresult +whoseverity_imp)
+                              design = ~ scaled_age + sex +phase3 + hivrdtresult +whoseverity_imp)
 
 keep <- rowSums(counts(first_dds)) >= 10
 first_dds <- first_dds[keep,]
@@ -93,6 +104,35 @@ res_whoseverity <- results(first_dds, contrast = list("whoseverity_imp_1_vs_0"))
 ```{r}
 normalized_counts <- counts(first_dds,normalized=TRUE)
 ```
+
+
+#Check sample distribution.
+
+```{r}
+all_values <- pca(normalized_counts, metadata = first_cmp_metadata, scale = F)
+pca1 <- all_values$rotated[,1:2]
+pca1$pid <-rownames(pca1)
+pca1 <- join(pca1, first_cmp_metadata, type = "inner")
+```
+
+
+```{r pca}
+custom_colors <- c( "purple", "gray", "blue", "pink")
+
+# Modify your ggplot code to use the custom colors
+ggplot(pca1, aes(PC1, PC2)) +
+    geom_point(size = 5, aes(colour = whoseverity_imp:phasedelta, shape = hivrdtresult), show.legend = TRUE) +
+    theme_bw(base_size = 18) +
+    xlab(paste0("PC1: ", round(all_values[["variance"]][1], 2), "% variance")) +
+    ylab(paste0("PC2: ", round(all_values[["variance"]][2], 2), "% variance")) +
+    theme(legend.position = "right") +
+    scale_color_manual(values = custom_colors) +  # Use the custom colors
+    theme(plot.background = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.grid.major = element_blank()) + ggtitle(" PCA for all samples")
+
+```
+
 
 #Get gene names. 
 ```{r}
@@ -118,9 +158,9 @@ df_normalized_counts$Gene_ID <-rownames(df_normalized_counts)
 df_normalized_counts <- join(df_normalized_counts, correlation_id_name, type="inner")
 df_normalized_counts$ensembl_gene_id <- NULL
 
-df_normalized_counts2 <- df_normalized_counts[,c(101,102,1:100)]
+df_normalized_counts2 <- df_normalized_counts[,c(100,101,1:99)]
 
-write.table(df_normalized_counts2, "Normalized_counts2.csv", quote = F, sep = ",", row.names = F, col.names = T)
+write.table(df_normalized_counts2, "NEW_RESULTS2/Normalized_counts2.csv", quote = F, sep = ",", row.names = F, col.names = T)
 
 ```
 
@@ -143,13 +183,13 @@ res_phasedelta_whoseverity <- results(second_whosev_dds, contrast = list("phased
 
 ```
 
-#Third comparison: patients who are HIV positive vs. negative adjusting for age, sex, and whoseverity_imp. Exclude the 2 patients with missing HIV status. 
-```{r}
-which(colnames(first_dds)=="CL558")
-which(colnames(first_dds)=="CL471")
 
-third_dds <- first_dds[,-80]
-third_dds <- third_dds[,-52]
+
+#Patients who are HIV positive vs. negative adjusting for age, sex, and whoseverity_imp. Exclude the 2 patients with missing HIV status. 
+```{r}
+
+third_dds <- first_dds[,-which(colnames(first_dds)=="CL558")]
+third_dds <- third_dds[,-which(colnames(first_dds)=="CL471")]
 
 keep <- rowSums(counts(third_dds) >= 10 ) >= 2
 third_dds <- third_dds[keep,]
@@ -162,6 +202,8 @@ resultsNames(third_dds)
 third_contrast_model <-  model.matrix(design(third_dds), colData(third_dds))
 
 res_hiv <- results(third_dds, contrast = list("hivrdtresult_1_vs_0"))
+metadata_third <- third_dds@colData
+
 ```
 
 
@@ -179,14 +221,14 @@ print_deseq_results <- function(results,comparison){
 
   #Now arrange by padjusted values.
   merged_table <- merged_table %>% arrange(padj)
-  write.table(merged_table, paste0(comparison, "_corrected_DESeq_results.csv"), quote = F, row.names = F, col.names = T, sep = ",")
+  write.table(merged_table, paste0("NEW_RESULTS2/", comparison, "_corrected_DESeq_results.csv"), quote = F, row.names = F, col.names = T, sep = ",")
 }
 
 ```
 
 ```{r}
 print_deseq_results(res_whoseverity, "whoseverity_imp")
-print_deseq_results(res_phasedelta_whoseverity,"whoseverity_imp_old")
+print_deseq_results(res_phasedelta_whoseverity,"phasedelta_whoseverity")
 print_deseq_results(res_hiv, "hivrdtresult")
 ```
 
@@ -212,13 +254,13 @@ sub_counts$MAD <- NULL
 sub_counts$Genes <- NULL
 
 mat_sub_counts <- as.matrix(sub_counts)
-mat_sub_counts <- scale(mat_sub_counts)
+mat_sub_counts_sc <- scale(mat_sub_counts)
 ```
 
 #Run consensus clustering.
 ```{r}
 results = ConsensusClusterPlus(
-  	  d=mat_sub_counts, 
+  	  d=mat_sub_counts_sc, 
           maxK = 12, 
           reps=1000, 
           pItem=0.8,pFeature=1, 
@@ -227,24 +269,19 @@ results = ConsensusClusterPlus(
           distance="euclidean", plot="png", title = "hc_clustering"
   	  )
 
-results2 = ConsensusClusterPlus(mat_sub_counts,
+results2 = ConsensusClusterPlus(mat_sub_counts_sc,
                             maxK=12,
                             reps=1000,
                             pItem=0.8,pFeature=1,
                             distance="euclidean",plot="png",
                             clusterAlg="km", title = "km_clustering")
-
-
-es.nbclust <- NbClust(test, distance = "euclidean",
-                       min.nc = 2, max.nc = 12,
-                       method = "complete", index ="all")
 ```
 
 #Get the cluster - sample relationship
 ```{r}
 sample_k <- data.frame(results[[2]][["consensusClass"]])
 sample_k <- sample_k %>% dplyr::rename("k_cluster"="results..2.....consensusClass...")
-write.table(sample_k, "sample_cluster_relation.csv", sep = ",", quote = F, row.names = T, col.names = T)
+write.table(sample_k, "NEW_RESULTS2/sample_cluster_relation.csv", sep = ",", quote = F, row.names = T, col.names = T)
 ```
 
 #Run diffrential expression analysis between these two groups. 
@@ -277,7 +314,7 @@ merged_table <- join(res_symptomatic_df, gene_id_name, type="inner")
   
 #Now arrange by padjusted values.
 merged_table <- merged_table %>% arrange(padj)
-write.table(merged_table, "symptomatic_corrected_DESeq_results.csv", quote = F, row.names = F, col.names = T, sep = ",")
+write.table(merged_table, "NEW_RESULTS2/symptomatic_corrected_DESeq_results.csv", quote = F, row.names = F, col.names = T, sep = ",")
 ```
 
 
@@ -294,7 +331,7 @@ gsea_function <- function(resuls_df, output_name){
       resuls_df <- join(resuls_df, gene_id_name, type="inner")
       resuls_df <- resuls_df %>% dplyr::select(Gene_Name,log_pvalue)
       write.table(resuls_df, 
-                  paste0("GSEA_files/",output_name, "_rank.rnk"), 
+                  paste0("NEW_RESULTS2/GSEA_files/",output_name, "_rank.rnk"), 
                   sep = "\t", 
                   row.names = F, 
                   col.names = F, 
