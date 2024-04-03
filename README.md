@@ -1,5 +1,5 @@
 # bulk-RNA-seq scripts
-These scripts were used for the analysis of 100 bulk-RNA-seq samples studied in the "Multidimensional host profiling of COVID-19 in Uganda reveals prognostic immunometabolic signatures that persist during HIV co-infection and diverge by variant-driven epidemic phase" paper.
+These scripts were used for the analysis of 100 bulk-RNA-seq samples studied in the "COVID-19 immune signatures in Uganda persist in HIV co-infection and diverge by pandemic phase" paper [PMID:38368384](https://pubmed.ncbi.nlm.nih.gov/38368384/).
 
 ### Pipeline steps
 * Adaptor removal and quality trimming using Trimmomatic.
